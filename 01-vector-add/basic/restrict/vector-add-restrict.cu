@@ -29,7 +29,7 @@ void check_result(vector<int>& a, vector<int>& b, vector<int>& c) {
 }
 
 int main(){
-    const int N = 1 << 16;
+    const int N = 1 << 26;
     const int bytes = N * sizeof(int);
 
     vector<int> a;
@@ -63,7 +63,7 @@ int main(){
 
     // Record start event
     cudaEventRecord(start);
-    for (int i = 0; i < 100000; i++) {
+    for (int i = 0; i < 1000; i++) {
         vector_add<<<n_block, n_thread>>>(a_d, b_d, c_d, N);
     }
     
