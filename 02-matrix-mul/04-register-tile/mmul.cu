@@ -9,26 +9,21 @@
 
 // Matrix dimensions, two matrixs:
 // (M, K) and (K, N)
-constexpr int M = (1 << 11) + 7;
-constexpr int N = (1 << 10) + 7;
-constexpr int K = (1 << 11) + 7;
+constexpr int M = 1 << 10
+constexpr int N = 1 << 10;
+constexpr int K = 1 << 10;
 
-const int THREAD_X = 32;
-const int THREAD_Y = 32;
+const int BM = 64;
+const int BN = 64;
+const int BK = 8;
+const int TM = 8;
 
-constexpr int K_stride = 32;
-
-// Padded matrix dimensions
-constexpr int M_padded = M + (THREAD_Y - M % THREAD_Y) % THREAD_Y;
-constexpr int N_padded = N + (THREAD_X - N % THREAD_X) % THREAD_X;
-constexpr int K_padded = K + (K_stride - K % K_stride) % K_stride;
-
-data_type h_a[M_padded * K_padded];
-data_type h_b[K_padded * N_padded];
+data_type h_a[M * K];
+data_type h_b[K * N];
 data_type h_c[M * N];
 
-const int a_bytes = M_padded * K_padded * sizeof(data_type);
-const int b_bytes = K_padded * N_padded * sizeof(data_type);
+const int a_bytes = M * K * sizeof(data_type);
+const int b_bytes = K * N * sizeof(data_type);
 const int c_bytes = M * N * sizeof(data_type);
 
 __global__ void matrixMul(data_type* a, data_type* b, data_type* c) {
@@ -38,8 +33,8 @@ __global__ void matrixMul(data_type* a, data_type* b, data_type* c) {
 
     // TODO: shared memory shape of matrix A and B shouldn't always 
     // be same. We should calculate them according to blockDim.
-    __shared__ data_type s_a[THREAD_Y * K_stride];
-    __shared__ data_type s_b[K_stride * THREAD_X];
+    __shared__ data_type s_a[BM * BK];
+    __shared__ data_type s_b[BK * BN];
 
     data_type tmp = 0;
     for(int i = 0; i < K_padded; i += K_stride) {
@@ -69,7 +64,7 @@ void verify_results(data_type* a, data_type* b, data_type* c, int N){
         for(int col = 0; col < N; col ++){
             data_type a_times_b = 0;
             for(int i = 0; i < K; i++){
-                a_times_b += a[row * K_padded + i] * b[N_padded * i + col];
+                a_times_b += a[row * K + i] * b[N * i + col];
             }
             if(a_times_b != c[row * N + col]){
                 printf("the result is wrong at row: %d, column: %d\n", row, col);
@@ -84,8 +79,8 @@ int main(){
     // Initialize h_a and h_b firstly.
     for(int row = 0; row < N; row ++){
         for(int col = 0; col < N; col ++){
-            h_a[row * N_padded + col] = rand() % 100;
-            h_b[row * N_padded + col] = rand() % 100;
+            h_a[row * N + col] = rand() % 100;
+            h_b[row * N + col] = rand() % 100;
         }
     }
 
@@ -101,7 +96,7 @@ int main(){
 
     // TODO: rethink the BLOCK_X and BLOCK_Y order. I thought it's
     // not important, we could switch them.
-    const int BLOCK_X = N_padded / THREAD_X;
+    const int BLOCK_X = N / BM;
     const int BLOCK_Y = M_padded / THREAD_Y;
 
     const dim3 threads(THREAD_X, THREAD_Y);
@@ -132,7 +127,7 @@ int main(){
 
     float milliseconds = 0;
     cudaEventElapsedTime(&milliseconds, start, stop);
-    double FLOPs = 2.0 * N_padded * M_padded * (K_padded / K_stride) * 2 * K_stride;
+    double FLOPs = 2.0 * N_padded * M_padded * K_padded;
     float GFLOPS = FLOPs / (milliseconds * 1e6);
 
     printf("Kernel execution time: %f ms\n", milliseconds);
