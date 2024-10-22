@@ -38,3 +38,13 @@ maybe we could check `PTX` code for it later and compare with vector-add case to
     c[row * N + col] = tmp;
     ```
     It shows same perf gain as `__restrict__`, maybe they have same `PTX` code? check them later.
+
+### share memory
+1. Use share memory to accelearte memory access, but it still have to access share memory / L1 cache, we could use register to make it run faster.
+2. How to calculate the upper bound limitation of how much blocks could run on a SM.
+
+### register-tile
+1. use a little inner loop or a tmp variable to hold a element in register to avoid access share memory.
+2. Why we use register tile improve perf? just register? it's a part, but from another point, we could do a comparasion for 2 case (take all of A, B and C with shape N * N):
+    1. 1 thread calculates an element in final matrix C: in that case, for a specific `column 0` in C, we have to load `column 0` in B for `once` in `N` threads, so we load `column 0` in B for `N` times.
+    2. 1 thread calculates a column in final matrix C (like 8 elements in a column): same as above case, we just need to load `column 0` in B for `once` in `N/8` threads, so we just load `column 0` in B for `N/8` times.

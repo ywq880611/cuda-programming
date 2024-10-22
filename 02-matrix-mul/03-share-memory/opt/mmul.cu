@@ -9,9 +9,9 @@
 
 // Matrix dimensions, two matrixs:
 // (M, K) and (K, N)
-constexpr int M = (1 << 11) + 7;
-constexpr int N = (1 << 10) + 7;
-constexpr int K = (1 << 11) + 7;
+constexpr int M = 1 << 10;
+constexpr int N = 1 << 10;
+constexpr int K = 1 << 10;
 
 const int THREAD_X = 32;
 const int THREAD_Y = 32;

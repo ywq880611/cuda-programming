@@ -1,15 +1,18 @@
 #include <stdio.h>
 #include <cassert> 
 
-// There is just about 15% perf improve on RTX3080Ti for this case.
-// I saw the GOPS improve by 2.5x, but 15% improve on kernel time.
-// TODO: it maybe caused by memory bandwidth??? Check later.
+// There is just about ~40% improvement compared with basic shared
+// memory on RTX 3080Ti.
+
+// NOTE: whether we use tmp or not in the 2rd loop didn't improve
+// perf at all, because even we didn't use it, the compiler will
+// optimize it if we have a smaller 3rd loop.
 
 #define data_type float
 
 // Matrix dimensions, two matrixs:
 // (M, K) and (K, N)
-constexpr int M = 1 << 10
+constexpr int M = 1 << 10;
 constexpr int N = 1 << 10;
 constexpr int K = 1 << 10;
 
@@ -27,36 +30,63 @@ const int b_bytes = K * N * sizeof(data_type);
 const int c_bytes = M * N * sizeof(data_type);
 
 __global__ void matrixMul(data_type* a, data_type* b, data_type* c) {
+    int iRow = threadIdx.y * TM; // For threads in block: range(0, 64, 8)
+    int iCol = threadIdx.x; // For threads in block: range(0, 64, 1)
 
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int eRow = blockIdx.y * blockDim.y * TM;
+    int eCol = blockIdx.x * blockDim.x;
 
-    // TODO: shared memory shape of matrix A and B shouldn't always 
-    // be same. We should calculate them according to blockDim.
+    // start row and col for the 1st loop.
+    int row = iRow + eRow;
+    int col = iCol + eCol;
+
     __shared__ data_type s_a[BM * BK];
     __shared__ data_type s_b[BK * BN];
 
-    data_type tmp = 0;
-    for(int i = 0; i < K_padded; i += K_stride) {
-        // NOTE: the check for avoid overflow in case the K_stride is less than
-        // blockDim.x pr blockDim.y
-        if(threadIdx.x < K_stride) {
-            s_a[threadIdx.y * K_stride + threadIdx.x] = a[row * K_padded + i + threadIdx.x];
+    int iRowA = threadIdx.x;
+    int iColA = threadIdx.y;
+    int iRowB = threadIdx.y;
+    int iColB = threadIdx.x;
+
+    data_type tmps[TM] = {0};
+    // 1st loop is for iterating over the two whole matrixs.
+    for(int i = 0; i < K; i += BK) {
+        if(iColA < BK) {
+            s_a[iRowA * BK + iColA] = a[(eRow + iRowA) * K + i + iColA];
         }
-        if(threadIdx.y < K_stride) {
-            s_b[threadIdx.y * blockDim.x + threadIdx.x] = b[(i+threadIdx.y) * N_padded + col];
+        if(iRowB < BK) {
+            s_b[iRowB * BN + iColB] = b[(iRowB + i) * N + eCol + iColB];
         }
 
         __syncthreads();
 
-        for(int j = 0; j < K_stride; j ++){
-            tmp += s_a[threadIdx.y * K_stride + j] * s_b[j * blockDim.x + threadIdx.x];
+        // 2nd loop interate over a block.
+        for(int j = 0; j < BK; j ++) {
+            // NOTE: The below code show same perf with below code in comment.
+            // Hence whether we use the tmp variable or not, it didn't improve
+            // perf at all, because in the below case, the compiler will
+            // optimize the kernel PTX code same as above.
+            data_type tmp = s_b[j * BN + iCol];
+            // 3rd loop for iterate row over matrix A.
+            for(int k = 0; k < TM; k ++) {
+                tmps[k] += tmp * s_a[(TM * threadIdx.y + k) * BK + j];
+            }
+            
+            /*
+            for(int k = 0; k < TM; k ++) {
+                tmps[k] += s_b[j * BN + iCol] * s_a[(TM * threadIdx.y + k) * BK + j];
+            }
+            */
         }
-
         __syncthreads();
     }
 
-    if (row < M && col < N) c[row * N + col] = tmp;
+    for(int r = 0; r < TM; r ++) {
+        if(r + row < M && col < N) {
+            c[(r + row) * N + col] = tmps[r];
+            //printf("c[%d][%d]: %f\n", r, col, tmps[r]);
+        }
+    }
 }
 
 void verify_results(data_type* a, data_type* b, data_type* c, int N){
@@ -68,7 +98,7 @@ void verify_results(data_type* a, data_type* b, data_type* c, int N){
             }
             if(a_times_b != c[row * N + col]){
                 printf("the result is wrong at row: %d, column: %d\n", row, col);
-                //printf("it should be %d, but it's %d\n", a_times_b, c[row * N + col]);
+                printf("it should be %f, but it's %f\n", a_times_b, c[row * N + col]);
                 abort();
             }
         }
@@ -96,18 +126,11 @@ int main(){
 
     // TODO: rethink the BLOCK_X and BLOCK_Y order. I thought it's
     // not important, we could switch them.
-    const int BLOCK_X = N / BM;
-    const int BLOCK_Y = M_padded / THREAD_Y;
+    const int BLOCK_X = N / BN;
+    const int BLOCK_Y = M / BM;
 
-    const dim3 threads(THREAD_X, THREAD_Y);
+    const dim3 threads(BN, BM/TM);
     const dim3 blocks(BLOCK_X, BLOCK_Y);
-
-    // NOTE: a detail, K_stride should be less or equal to blockDim.x
-    // and blockDim.y, otherwise in the below loop, the s_a and s_b
-    // shared memory couldn't be fully filled within blockDim.x * blockDim.y
-    // threads.
-    assert(K_stride <= threads.y);
-    assert(K_stride <= threads.x);
 
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -119,6 +142,7 @@ int main(){
     for(int i = 0; i < 100; i ++){
         matrixMul<<<blocks, threads>>>(d_a, d_b, d_c);
     }
+    
 
     // Record stop event
     cudaEventRecord(stop);
@@ -127,7 +151,7 @@ int main(){
 
     float milliseconds = 0;
     cudaEventElapsedTime(&milliseconds, start, stop);
-    double FLOPs = 2.0 * N_padded * M_padded * K_padded;
+    double FLOPs = 2.0 * N * M * K;
     float GFLOPS = FLOPs / (milliseconds * 1e6);
 
     printf("Kernel execution time: %f ms\n", milliseconds);
