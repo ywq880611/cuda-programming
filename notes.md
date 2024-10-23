@@ -48,3 +48,6 @@ maybe we could check `PTX` code for it later and compare with vector-add case to
 2. Why we use register tile improve perf? just register? it's a part, but from another point, we could do a comparasion for 2 case (take all of A, B and C with shape N * N):
     1. 1 thread calculates an element in final matrix C: in that case, for a specific `column 0` in C, we have to load `column 0` in B for `once` in `N` threads, so we load `column 0` in B for `N` times.
     2. 1 thread calculates a column in final matrix C (like 8 elements in a column): same as above case, we just need to load `column 0` in B for `once` in `N/8` threads, so we just load `column 0` in B for `N/8` times.
+
+### register tile 2d
+1. `__launch_bounds__` could use to tell compiler the maxmium of how many threads in a block we would like to launch, that could keep each threads could be allocated to enough registers to avoid load from cache or memory.
