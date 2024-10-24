@@ -1,8 +1,13 @@
 #include <stdio.h>
 #include <cassert> 
 
-// There is just about ~25% improvement compared with 1d tile
+// There is just about ~120% improvement compared with 1d tile
 // version on RTX 3080Ti.
+
+// NOTE: The kernel perf exceed the expection compared with
+// the previous kernel. Because the yestday kernel waste some
+// thread in process of loading GMEM into SMEM, now we optimize
+// it, and improve the perf gain from ~50% to ~120%.
 
 // NOTE: If we increase the matrix size to 4096, we could see 
 // ~50% gain, on our local test the kernel 4 and kernel 5 in
@@ -50,6 +55,7 @@ __global__ void __launch_bounds__((BM * BN) / (TM * TN), 1) matrixMul(data_type*
     data_type regB[TN] = {0};
     // 1st loop is for iterating over the two whole matrixs.
     for(int i = 0; i < K; i += BK) {
+        /*
         // Load GMEM into SMEM
         // The two asserts is nesscessry for the below load, otherwise
         // we couldn't load the data into SMEM fully.
@@ -64,6 +70,32 @@ __global__ void __launch_bounds__((BM * BN) / (TM * TN), 1) matrixMul(data_type*
             if(threadIdx.y < BK) {
                 s_b[threadIdx.y * BN + iCol + sbc] = b[(i + threadIdx.y) * N + eCol + iCol + sbc];
             }
+        }
+        */
+
+        // NOTE: the reason for yestday kernel's perf didn't meet expection:
+        // The above solution for load GMEM into SMEM waste some resources,
+        // because the if(threadIdx.x < BK) and if(threadIdx.y < BK) check
+        // forced some thread to do nothing, but wait for other thread load
+        // from GMEM, so the below solution I would like to ask each thread
+        // to load an element from GMEM.
+        // In this approch, the thread may not enought to load all elements
+        // we want from GMEM into SMEM, so we have to do some loop to achive
+        // our purpose.
+        int threadCnt = (BN/TN) * (BM/TM);
+        int threadId = threadIdx.x + (threadIdx.y * blockDim.x);
+        int iRowA = threadId / BK;
+        int iColA = threadId % BK;
+        int strideA = threadCnt / BK;
+        int iRowB = threadId / BN;
+        int iColB = threadId % BN;
+        int strideB = threadCnt / BN;
+
+        for(int sar = 0; sar < BM; sar += strideA){
+            s_a[((iRowA + sar) * BK + iColA)] = a[(eRow + iRowA + sar) * K + i + iColA];
+        }
+        for(int sbr = 0; sbr < BK; sbr += strideB) {
+            s_b[(iRowB + sbr) * BN + iColB] = b[(i + iRowB + sbr) * N + eCol + iColB];
         }
 
         __syncthreads();
@@ -130,7 +162,7 @@ void verify_results(data_type* a, data_type* b, data_type* c, int N){
 
 int main(){
     // Initialize h_a and h_b firstly.
-    for(int row = 0; row < N; row ++){
+    for(int row = 0; row < M; row ++){
         for(int col = 0; col < N; col ++){
             h_a[row * N + col] = rand() % 100;
             h_b[row * N + col] = rand() % 100;

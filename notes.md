@@ -51,3 +51,12 @@ maybe we could check `PTX` code for it later and compare with vector-add case to
 
 ### register tile 2d
 1. `__launch_bounds__` could use to tell compiler the maxmium of how many threads in a block we would like to launch, that could keep each threads could be allocated to enough registers to avoid load from cache or memory.
+2. `NOTE`: make sure we didn't waste resource!!! In previous kernel of 05-register-2d kernel, we waste some thread in `if(threadIdx.x < BK)` and `if(threadIdx.y < BK)`. Hence if the thread didn't meet these condition, it will do nothing, so we couldn't load data from GMEM to SMEM ASAP.  
+in such a case that the share memory size was not same as our thread count in a block, we could try to use a loop to load GMEM into SMEM to make all thread to load an element at least! please refer to how current `05-register-tile-2d` kernel load GMEM.
+
+### vectorize
+1. vectorize by loading/writing a 128 byte float between GMEM and SMEM, it could benefits perf.
+2. On my kernel, the 128 byte SIMD code only works on writing process, I didn't know why it didn't work on loading process, but it also bring `~8%` gain from writing, maybe I could investigate on loading later.
+
+## auto-tuning
+1. Try to tune `BM, BN, BK, TM and TN` to see which combination could bring best performance to our kernel, it dependences on specific GPU spec.

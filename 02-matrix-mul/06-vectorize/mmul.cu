@@ -1,17 +1,12 @@
 #include <stdio.h>
 #include <cassert> 
 
-// There is just about ~25% improvement compared with 1d tile
-// version on RTX 3080Ti.
+// There is just about ~8% improvement compared with previous
+// version kernel on RTX 3080Ti.
 
-// NOTE: If we increase the matrix size to 4096, we could see 
-// ~50% gain, on our local test the kernel 4 and kernel 5 in
-// https://siboehm.com/articles/22/CUDA-MMM shows ~90% gain.
-// We should investigate later. 
-
-// the improvement is not meet our expectation, in the
-// blog, the author claim this kernel will bring 2x perf gain
-// compared with 1d tile kernel.
+// NOTE: the 8% gain from the writeback to C matrix in kernel,
+// it was compiled with SIMD inst, but why we didn't use SIMD
+// inst in the process of loading GMEM into SMEM? it's a question.
 
 #define data_type float
 
@@ -51,21 +46,33 @@ __global__ void __launch_bounds__((BM * BN) / (TM * TN), 1) matrixMul(data_type*
     // 1st loop is for iterating over the two whole matrixs.
     for(int i = 0; i < K; i += BK) {
         // Load GMEM into SMEM
-        // The two asserts is nesscessry for the below load, otherwise
-        // we couldn't load the data into SMEM fully.
-        assert(blockDim.y >= BK);
-        assert(blockDim.x >= BK);
-        // We use SIMD (vectorized) instructions here to load data.
-        for(int sar = 0; sar < TM; sar ++) {
-            if(threadIdx.x < BK) {
-                s_a[(iRow + sar) * BK + threadIdx.x] = a[(iRow + eRow + sar) * K + i + threadIdx.x];
-            }
-        }
-        for(int sbc = 0; sbc < TN; sbc ++) {
-            if(threadIdx.y < BK) {
-                s_b[threadIdx.y * BN + iCol + sbc] = b[(i + threadIdx.y) * N + eCol + iCol + sbc];
-            }
-        }
+        // NOTE: This vectorized optimization based on an assumption:
+        // There is (BM / TM) * (BN / TN) = 256 threads per block
+        // For SMEM s_a and s_b, each of them have same number of
+        // elements BM(or BN) * BK = 1024.
+        // So we could see each thread should load 1024/256 = 4
+        // elements, in the previous 05 kernel, we already do this,
+        // but we did it by a loop, which should load float32
+        // 4 times and the 4 float32 element were not adjacent.
+        
+        // NOTE: Hence there is an optimizaion idea, we could load
+        // 4 adjacent elements once in a thread by a load.128b inst
+        // which will improve perf.
+
+        // TODP: it seems the below code didn't be compiled with
+        // load.128b inst, so it didn't improve perf why?
+        // instigate it later!!!
+        int threadId = threadIdx.x + (threadIdx.y * blockDim.x); // range(0, 256)
+        int iRowA = threadId / (BK / 4);
+        int iColA = (threadId % (BK / 4)) * 4;
+        int iRowB = threadId / (BN / 4);
+        int iColB = (threadId % (BN / 4)) * 4;
+        
+        reinterpret_cast<float4 *>(&s_a[iRowA * BK + iColA])[0] =
+        reinterpret_cast<float4 *>(&a[(iRowA + eRow) * K + i + iColA])[0];
+
+        reinterpret_cast<float4 *>(&s_b[iRowB * BN + iColB])[0] =
+        reinterpret_cast<float4 *>(&b[(iRowB + i) * N + eCol + iColB])[0];
 
         __syncthreads();
 
@@ -94,11 +101,28 @@ __global__ void __launch_bounds__((BM * BN) / (TM * TN), 1) matrixMul(data_type*
         __syncthreads();
     }
 
+    /*
     for(int i = 0; i < TM * TN; i ++) {
         int iiRow = i / TN;
         int iiCol = i % TN;
         c[(eRow + iRow + iiRow) * N + eCol + iCol + iiCol] = tmps[i];
     }
+    */
+    
+    // Writeback could also be vectorized.
+    // NOTE: this writeback is better than above writeback, it could
+    // utilize `st.global.v4.f32` inst, and it shows ~8% improve aginst
+    // previous kernel.
+    // Check whether the process of loading GMEM into SMEM didn't use
+    // `ld.global.v4.f32` inst!!!! if it was used, we may get a better
+    // performance!!
+    for(int i = 0; i < TM; i ++) {
+        for(int j  = 0; j < TN; j += 4){
+            reinterpret_cast<float4 *>(&c[(eRow + iRow + i) * N + + eCol + iCol + j])[0] =
+            reinterpret_cast<float4 *>(&tmps[i * TN + j])[0];
+        }
+    }
+    
 }
 
 void verify_results(data_type* a, data_type* b, data_type* c, int N){
@@ -119,7 +143,7 @@ void verify_results(data_type* a, data_type* b, data_type* c, int N){
 
 int main(){
     // Initialize h_a and h_b firstly.
-    for(int row = 0; row < N; row ++){
+    for(int row = 0; row < M; row ++){
         for(int col = 0; col < N; col ++){
             h_a[row * N + col] = rand() % 100;
             h_b[row * N + col] = rand() % 100;
