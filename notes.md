@@ -58,5 +58,56 @@ in such a case that the share memory size was not same as our thread count in a 
 1. vectorize by loading/writing a 128 byte float between GMEM and SMEM, it could benefits perf.
 2. On my kernel, the 128 byte SIMD code only works on writing process, I didn't know why it didn't work on loading process, but it also bring `~8%` gain from writing, maybe I could investigate on loading later.
 
-## auto-tuning
+### auto-tuning
 1. Try to tune `BM, BN, BK, TM and TN` to see which combination could bring best performance to our kernel, it dependences on specific GPU spec.
+
+### Warp-Tile
+1. How warp tile optimiazation works? We know each warp contains 32 threads, but we didn't care about how it works in previous kernel, so in the previous each warp process 32 sub matrix, which shapes is `(TM * TN)`, in a `(1, 32)` shape, just like below case (assume both TM and TN are 8, both M and N is 1024):
+
+    ```
+    ---------------------------1024--------------------------|
+    |<-----warp 1----->|xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|
+    |xxxxxxxxxxxxxxxxxx|.....................................|
+    |xxxxxxxxxxxxxxxxxx|.....................................|
+    |xxxxxxxxxxxxxxxxxx|.....................................|
+    |xxxxxxxxxxxxxxxxxx|.....................................|
+    |xxxxxxxxxxxxxxxxxx|.....................................|
+    |xxxxxxxxxxxxxxxxxx|.....................................|
+    |xxxxxxxxxxxxxxxxxx|.....................................|
+    |xxxxxxxxxxxxxxxxxx|.....................................|
+    |xxxxxxxxxxxxxxxxxx|.....................................|
+    |xxxxxxxxxxxxxxxxxx|.....................................|
+    |xxxxxxxxxxxxxxxxxx|.....................................|
+    |xxxxxxxxxxxxxxxxxx|.....................................|
+    |xxxxxxxxxxxxxxxxxx|.....................................|
+    |xxxxxxxxxxxxxxxxxx|.....................................|
+    |xxxxxxxxxxxxxxxxxx|.....................................|
+    |xxxxxxxxxxxxxxxxxx|.....................................|
+    ```
+    It may load `32 * 1024 + 1 * 1024 - 32 = 33760` elements from GMEM/SMEM.
+
+    but if we tweak the warp into another mode, like make the warp calculate a `(4, 8)` matrix, it may looks like:
+
+    ```
+    ---------------------------1024--------------------------|
+    |<-warp 1->|xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|
+    |<-warp 1->|xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|
+    |<-warp 1->|xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|
+    |<-warp 1->|xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx|
+    |xxxxxxxxxx|.............................................|
+    |xxxxxxxxxx|.............................................|
+    |xxxxxxxxxx|.............................................|
+    |xxxxxxxxxx|.............................................|
+    |xxxxxxxxxx|.............................................|
+    |xxxxxxxxxx|.............................................|
+    |xxxxxxxxxx|.............................................|
+    |xxxxxxxxxx|.............................................|
+    |xxxxxxxxxx|.............................................|
+    |xxxxxxxxxx|.............................................|
+    |xxxxxxxxxx|.............................................|
+    |xxxxxxxxxx|.............................................|
+    ```
+
+    It just load `4 * 1024 + 8 * 1024 - 32 = 12256` elements from GMEM/SMEM.
+
+    So there is `1 - (12256 / 33760) = 63%` GMEM/SMEM load reducation.
