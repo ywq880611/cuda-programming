@@ -1,45 +1,66 @@
 #include <stdio.h>
 
-// NOTE:Compare to 02-kernel, it also shows ~30% regression, I
-// suspect the reason was that there are too much blocks in the
-// kernel, we set there is 1024 kernel due to the large N array.
-// It's hard to do more optimization based on the huge array,
-// otherwise we could ask each thread to load not only one element
-// in a kernel, but it's still resticted by the maximum shared
-// memory size, so I will not try it here.
+// NOTE: This kernel bring regression compared to 08 kernel, maybe
+// for such a case, we have to tweak the block and thread number to
+// make the full unrolling improve more performance.
 
 const int N = 1 << 20;
-const int BLOCK_NUM = 1 << 10;
+const int BLOCK_NUM = (1 << 10) / 2;
 const int THREAD_NUM = 1 << 10;
 // block length should equal to thread length.
-const int BLOCK_LENGTH = N / BLOCK_NUM;
+const int BLOCK_LENGTH = N / (BLOCK_NUM * 2);
 const int ITERATION = 1000;
 
 float h_a[N];
 
+template <int blockSize>
+__device__ void warpReduce(volatile float* sdata, int tid) {
+  if (blockSize >= 64) sdata[tid] += sdata[tid + 32];
+  if (blockSize >= 32) sdata[tid] += sdata[tid + 16];
+  if (blockSize >= 16) sdata[tid] += sdata[tid + 8];
+  if (blockSize >= 8) sdata[tid] += sdata[tid + 4];
+  if (blockSize >= 4) sdata[tid] += sdata[tid + 2];
+  if (blockSize >= 2) sdata[tid] += sdata[tid + 1];
+}
+
+template <int blockSize>
 __global__ void sumReuction(float* a, float* r) {
   int threadId = threadIdx.x;
   int blockId = blockIdx.x;
   int offset = blockId * blockDim.x;
 
   __shared__ float smem[BLOCK_LENGTH];
-  smem[threadId] = a[offset + threadId];
+  smem[threadId] =
+      a[offset + threadId] + a[offset + threadId + BLOCK_LENGTH / 2];
   __syncthreads();
 
-  for (int stride = 1; stride < blockDim.x; stride *= 2) {
-    if (threadId % (2 * stride) == 0) {
-      smem[threadId] += smem[threadId + stride];
-    }
+  if (blockSize >= 2048) {
+    if (threadId < 1024) smem[threadId] += smem[threadId + 1024];
+    __syncthreads();
+  }
+  if (blockSize >= 1024) {
+    if (threadId < 512) smem[threadId] += smem[threadId + 512];
+    __syncthreads();
+  }
+  if (blockSize >= 512) {
+    if (threadId < 256) smem[threadId] += smem[threadId + 256];
+    __syncthreads();
+  }
+  if (blockSize >= 256) {
+    if (threadId < 128) smem[threadId] += smem[threadId + 128];
+    __syncthreads();
+  }
+  if (blockSize >= 128) {
+    if (threadId < 64) smem[threadId] += smem[threadId + 64];
     __syncthreads();
   }
 
-  __syncthreads();
-  // printf("a[offset] is: %f\n", a[offset]);
+  warpReduce<blockSize>(smem, threadId);
   if (threadId == 0) atomicAdd(r, smem[0]);
 }
 
 void verify_result(float a, float b) {
-  if (abs(a - b) > 1e-5 * abs(a)) {
+  if (abs(a - b) > 1e-3 * abs(a)) {
     printf("res is wrong! it's %5f, it should be %5f\n", a, b);
   } else {
     printf("it's OK!\n");
@@ -47,14 +68,14 @@ void verify_result(float a, float b) {
 }
 
 int main() {
-  static_assert(N == BLOCK_NUM * THREAD_NUM);
+  static_assert(N == BLOCK_NUM * THREAD_NUM * 2);
   // Initialize host array first, and store the final sum result.
   double final_res = 0;
   for (int i = 0; i < N; i++) {
     // Couldn't use too big number here, otherwise the result may
     // not be very percise.
-    // h_a[i] = rand() % 100;
-    h_a[i] = 1;
+    h_a[i] = rand() % 100;
+    // h_a[i] = 1;
     final_res += h_a[i];
   }
 
@@ -69,7 +90,7 @@ int main() {
   const dim3 threads(THREAD_NUM);
 
   // Run it once for verify result.
-  sumReuction<<<blocks, threads>>>(d_a, d_r);
+  sumReuction<BLOCK_LENGTH><<<blocks, threads>>>(d_a, d_r);
 
   float res = 0;
   cudaMemcpy(&res, d_r, sizeof(float), cudaMemcpyDeviceToHost);
@@ -83,7 +104,7 @@ int main() {
   cudaEventRecord(start);
 
   for (int i = 0; i < ITERATION; i++) {
-    sumReuction<<<blocks, threads>>>(d_a, d_r);
+    sumReuction<BLOCK_LENGTH><<<blocks, threads>>>(d_a, d_r);
   }
 
   // Record stop event

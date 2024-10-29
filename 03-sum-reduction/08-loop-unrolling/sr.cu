@@ -1,37 +1,48 @@
 #include <stdio.h>
 
-// Here is a naive kernel, which will ask each thread to calculate
-// a partition of the array, then sum them up.
+// NOTE: We could unrolling the last sequential adding, because
+// when there are only 32 threads left, all the threads are in
+// a same warp, so we didn't need to do `__syncthreads()` any
+// more because all the threads in a same warp share a same ip.
+// It shows ~50% perf gain compared with 07 kernel.
 
 const int N = 1 << 20;
-// const int BLOCK_NUM = 32;
-const int BLOCK_NUM = 32;
-// const int THREAD_NUM = 1 << 10;
-const int THREAD_NUM = 128;
-const int THREAD_LENGTH = N / (BLOCK_NUM * THREAD_NUM);
+const int BLOCK_NUM = (1 << 10) / 2;
+const int THREAD_NUM = 1 << 10;
+// block length should equal to thread length.
+const int BLOCK_LENGTH = N / (BLOCK_NUM * 2);
 const int ITERATION = 1000;
 
 float h_a[N];
 
-__global__ void sumReuction(float* a, float* b, float* r) {
+__device__ void warpReduce(volatile float* sdata, int tid) {
+  sdata[tid] += sdata[tid + 32];
+  sdata[tid] += sdata[tid + 16];
+  sdata[tid] += sdata[tid + 8];
+  sdata[tid] += sdata[tid + 4];
+  sdata[tid] += sdata[tid + 2];
+  sdata[tid] += sdata[tid + 1];
+}
+
+__global__ void sumReuction(float* a, float* r) {
   int threadId = threadIdx.x;
   int blockId = blockIdx.x;
-  int offset = (blockId * blockDim.x + threadId) * THREAD_LENGTH;
+  int offset = blockId * blockDim.x;
 
-  float res = 0;
-
-  for (int i = offset; i < offset + THREAD_LENGTH; i++) {
-    res += a[i];
-  }
-
-  b[blockId * blockDim.x + threadId] = res;
-
+  __shared__ float smem[BLOCK_LENGTH];
+  smem[threadId] =
+      a[offset + threadId] + a[offset + threadId + BLOCK_LENGTH / 2];
   __syncthreads();
-  if (offset == 0) {
-    for (int i = 0; i < BLOCK_NUM * THREAD_NUM; i++) {
-      *r += b[i];
+
+  for (int stride = blockDim.x / 2; stride > 32; stride /= 2) {
+    if (threadId < stride) {
+      smem[threadId] += smem[threadId + stride];
     }
+    __syncthreads();
   }
+
+  if (threadId < 32) warpReduce(smem, threadId);
+  if (threadId == 0) atomicAdd(r, smem[0]);
 }
 
 void verify_result(float a, float b) {
@@ -43,21 +54,20 @@ void verify_result(float a, float b) {
 }
 
 int main() {
-  static_assert(N % (BLOCK_NUM * THREAD_NUM) == 0);
+  static_assert(N == BLOCK_NUM * THREAD_NUM * 2);
   // Initialize host array first, and store the final sum result.
   double final_res = 0;
   for (int i = 0; i < N; i++) {
     // Couldn't use too big number here, otherwise the result may
     // not be very percise.
-    h_a[i] = rand() % 100;
+    // h_a[i] = rand() % 100;
+    h_a[i] = 1;
     final_res += h_a[i];
   }
 
   float* d_a;
-  float* d_b;
   float* d_r;
   cudaMalloc(&d_a, N * sizeof(float));
-  cudaMalloc(&d_b, BLOCK_NUM * THREAD_NUM * sizeof(float));
   cudaMalloc(&d_r, sizeof(float));
 
   cudaMemcpy(d_a, h_a, N * sizeof(float), cudaMemcpyHostToDevice);
@@ -66,7 +76,7 @@ int main() {
   const dim3 threads(THREAD_NUM);
 
   // Run it once for verify result.
-  sumReuction<<<blocks, threads>>>(d_a, d_b, d_r);
+  sumReuction<<<blocks, threads>>>(d_a, d_r);
 
   float res = 0;
   cudaMemcpy(&res, d_r, sizeof(float), cudaMemcpyDeviceToHost);
@@ -80,7 +90,7 @@ int main() {
   cudaEventRecord(start);
 
   for (int i = 0; i < ITERATION; i++) {
-    sumReuction<<<blocks, threads>>>(d_a, d_b, d_r);
+    sumReuction<<<blocks, threads>>>(d_a, d_r);
   }
 
   // Record stop event

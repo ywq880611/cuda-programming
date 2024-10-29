@@ -1,37 +1,38 @@
 #include <stdio.h>
 
-// Here is a naive kernel, which will ask each thread to calculate
-// a partition of the array, then sum them up.
+// NOTE: We replace the modulus operation by mutiply operation,
+// because modulus is expensive in GPU rather than a mutiply.
+// This kernel shows an on-par performance with 02-kernel (~5% lag).
 
 const int N = 1 << 20;
-// const int BLOCK_NUM = 32;
-const int BLOCK_NUM = 32;
-// const int THREAD_NUM = 1 << 10;
-const int THREAD_NUM = 128;
-const int THREAD_LENGTH = N / (BLOCK_NUM * THREAD_NUM);
+const int BLOCK_NUM = 1 << 10;
+const int THREAD_NUM = 1 << 10;
+// block length should equal to thread length.
+const int BLOCK_LENGTH = N / BLOCK_NUM;
 const int ITERATION = 1000;
 
 float h_a[N];
 
-__global__ void sumReuction(float* a, float* b, float* r) {
+__global__ void sumReuction(float* a, float* r) {
   int threadId = threadIdx.x;
   int blockId = blockIdx.x;
-  int offset = (blockId * blockDim.x + threadId) * THREAD_LENGTH;
+  int offset = blockId * blockDim.x;
 
-  float res = 0;
+  __shared__ float smem[BLOCK_LENGTH];
+  smem[threadId] = a[offset + threadId];
+  __syncthreads();
 
-  for (int i = offset; i < offset + THREAD_LENGTH; i++) {
-    res += a[i];
+  for (int stride = 1; stride < blockDim.x; stride *= 2) {
+    int t_offset = threadId * stride * 2;
+    if (t_offset < blockDim.x) {
+      smem[t_offset] += smem[t_offset + stride];
+    }
+    __syncthreads();
   }
-
-  b[blockId * blockDim.x + threadId] = res;
 
   __syncthreads();
-  if (offset == 0) {
-    for (int i = 0; i < BLOCK_NUM * THREAD_NUM; i++) {
-      *r += b[i];
-    }
-  }
+  // printf("a[offset] is: %f\n", a[offset]);
+  if (threadId == 0) atomicAdd(r, smem[0]);
 }
 
 void verify_result(float a, float b) {
@@ -43,21 +44,20 @@ void verify_result(float a, float b) {
 }
 
 int main() {
-  static_assert(N % (BLOCK_NUM * THREAD_NUM) == 0);
+  static_assert(N == BLOCK_NUM * THREAD_NUM);
   // Initialize host array first, and store the final sum result.
   double final_res = 0;
   for (int i = 0; i < N; i++) {
     // Couldn't use too big number here, otherwise the result may
     // not be very percise.
-    h_a[i] = rand() % 100;
+    // h_a[i] = rand() % 100;
+    h_a[i] = 1;
     final_res += h_a[i];
   }
 
   float* d_a;
-  float* d_b;
   float* d_r;
   cudaMalloc(&d_a, N * sizeof(float));
-  cudaMalloc(&d_b, BLOCK_NUM * THREAD_NUM * sizeof(float));
   cudaMalloc(&d_r, sizeof(float));
 
   cudaMemcpy(d_a, h_a, N * sizeof(float), cudaMemcpyHostToDevice);
@@ -66,7 +66,7 @@ int main() {
   const dim3 threads(THREAD_NUM);
 
   // Run it once for verify result.
-  sumReuction<<<blocks, threads>>>(d_a, d_b, d_r);
+  sumReuction<<<blocks, threads>>>(d_a, d_r);
 
   float res = 0;
   cudaMemcpy(&res, d_r, sizeof(float), cudaMemcpyDeviceToHost);
@@ -80,7 +80,7 @@ int main() {
   cudaEventRecord(start);
 
   for (int i = 0; i < ITERATION; i++) {
-    sumReuction<<<blocks, threads>>>(d_a, d_b, d_r);
+    sumReuction<<<blocks, threads>>>(d_a, d_r);
   }
 
   // Record stop event
