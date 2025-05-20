@@ -67,6 +67,8 @@ __global__ void wmma_gemm(const half* A, const half* B, float* C, int M, int N, 
 }
 
 void compare_gemm_kernels() {
+    const int round = 5;
+
     float *h_C_naive, *h_C_wmma;
     half *h_A, *h_B;
     half *d_A, *d_B;
@@ -98,17 +100,27 @@ void compare_gemm_kernels() {
     dim3 blockDim(16, 16);
     dim3 gridDim((N + 15) / 16, (M + 15) / 16);
 
+    // warm up
+    for(int i = 0; i < round; i ++) {
+        naive_gemm_half<<<gridDim, blockDim>>>(d_A, d_B, d_C_naive, M, N, K);
+        CHECK_CUDA(cudaDeviceSynchronize());
+    }
+
     // Time Naive
     auto start_naive = high_resolution_clock::now();
-    naive_gemm_half<<<gridDim, blockDim>>>(d_A, d_B, d_C_naive, M, N, K);
-    CHECK_CUDA(cudaDeviceSynchronize());
+    for(int i = 0; i < round; i ++) {
+        naive_gemm_half<<<gridDim, blockDim>>>(d_A, d_B, d_C_naive, M, N, K);
+        CHECK_CUDA(cudaDeviceSynchronize());
+    }
     auto end_naive = high_resolution_clock::now();
 
     // Time WMMA
     dim3 grid_wmma(N / 16, M / 16);
     auto start_wmma = high_resolution_clock::now();
-    wmma_gemm<<<grid_wmma, dim3(32)>>>(d_A, d_B, d_C_wmma, M, N, K);
-    CHECK_CUDA(cudaDeviceSynchronize());
+    for(int i = 0; i < round; i ++) {
+        wmma_gemm<<<grid_wmma, dim3(32)>>>(d_A, d_B, d_C_wmma, M, N, K);
+        CHECK_CUDA(cudaDeviceSynchronize());
+    }
     auto end_wmma = high_resolution_clock::now();
 
     CHECK_CUDA(cudaMemcpy(h_C_naive, d_C_naive, size_C, cudaMemcpyDeviceToHost));
@@ -125,7 +137,7 @@ void compare_gemm_kernels() {
     auto dur_wmma  = duration_cast<duration<double>>(end_wmma  - start_wmma).count();
 
     // Compute TFLOPs: 2*M*N*K operations
-    double ops = 2.0 * M * N * K;
+    double ops = 2.0 * M * N * K * round;
     double tflops_naive = ops / (dur_naive * 1e12);
     double tflops_wmma  = ops / (dur_wmma * 1e12);
 

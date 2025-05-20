@@ -22,11 +22,26 @@ Here is the example output for this [file](./01-naive-vs-wmma/compare.cu):
 ```
 ================ Performance Report ================
 Matrix size: M=4096, N=4096, K=4096
-Naive Kernel Time: 80.2572 ms
-Naive Kernel TFLOPs: 1.71248
-WMMA  Kernel Time: 18.6568 ms
-WMMA  Kernel TFLOPs: 7.36668
+Naive Kernel Time: 351.055 ms
+Naive Kernel TFLOPs: 1.95751
+WMMA  Kernel Time: 78.7553 ms
+WMMA  Kernel TFLOPs: 8.7257
 Max absolute difference between results: 0
 ====================================================
 ```
 It shows **4x** gain for baseline, but both `wmma` and baseline implement are very naive, we could do futher experiment later.
+
+
+### Classic GEMM implement
+There is another GEMM, it utilize the classic 4 loops 2d tile GEMM, the example output came from this [file](./02-classic-gemm-vs-wmma/compare.cu):
+```
+================ Performance Report ================
+Matrix size: M=4096, N=4096, K=4096
+Classic Kernel Time: 51.1002 ms
+Classic Kernel TFLOPs: 13.448
+WMMA  Kernel Time: 83.3077 ms
+WMMA  Kernel TFLOPs: 8.24888
+Max absolute difference between results: 0
+====================================================
+```
+It seems the `wmma` version is worse than the classic GEMM, but we could try to optimize it later.
