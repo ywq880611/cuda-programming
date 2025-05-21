@@ -2,8 +2,7 @@
 
 #include <cassert>
 
-// TODO: this kernel is wrong, it couldn't get the correct
-// result, and didn't show any perf gain.
+// TODO: fix bug, but try to rewrite it later.
 
 // Please rewrite it later!!!!
 
@@ -64,12 +63,13 @@ __device__ void loadFromGmem(int iRowA, int iColA, int iRowB, int iColB,
 
   // each thread load thread_load_M_iter float4 in thread_load_M_iter row.
   for (int mr = iRowA; mr < BM; mr += rowStrideA) {
-    reinterpret_cast<float4 *>(&s_a[(mr)*BK + iColA * 4])[0] =
-        reinterpret_cast<float4 *>(&a[(mr + eRow) * K + iColA * 4])[0];
+    reinterpret_cast<float4 *>(&s_a[mr * BK + iColA * 4])[0] = 
+      reinterpret_cast<float4 *>(&a[(mr + eRow) * K + offset + iColA * 4])[0];
+    
   }
 
   for (int nr = iRowB; nr < BK; nr += rowStrideB) {
-    reinterpret_cast<float4 *>(&s_b[(nr)*BN + iColB * 4])[0] =
+    reinterpret_cast<float4 *>(&s_b[nr * BN + iColB * 4])[0] =
         reinterpret_cast<float4 *>(&b[(nr + offset) * N + eCol + iColB * 4])[0];
   }
 }
@@ -85,9 +85,9 @@ __global__ void __launch_bounds__(NUM_THREADS)
   const int warpRow = warpIdx / (BN / WN);
   const int warpCol = warpIdx % (BN / WN);
 
-  const int iWarpIdx = threadId % WARP_SIZE;
-  int iRowSubC = (iWarpIdx / (WSUBN / TN)) * TM;
-  int iColSubC = (iWarpIdx % (WSUBN / TN)) * TN;
+  const int laneId = threadId % WARP_SIZE;
+  int iRowSubC = (laneId / (WSUBN / TN)) * TM;
+  int iColSubC = (laneId % (WSUBN / TN)) * TN;
 
   __shared__ data_type s_a[BM * BK];
   __shared__ data_type s_b[BK * BN];
