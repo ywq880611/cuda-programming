@@ -1,12 +1,16 @@
 #include <stdio.h>
 
-const int N = 1 << 10;
-const int bytes = N * N * sizeof(N);
-int h_a[N * N];
-int h_b[N * N];
-int h_c[N * N];
+#include "../../00-cuBLAS/mmul.cuh"
 
-__global__ void matrixMul(int* a, int* b, int* c, int N) {
+const int N = 1 << 12;
+const int bytes = N * N * sizeof(float);
+float h_a[N * N];
+float h_b[N * N];
+float h_c[N * N];
+
+const int test_round = 10;
+
+__global__ void matrixMul(float* a, float* b, float* c) {
   // take N as both no. of rows and coulums, so here is
   // a sqare matrix.
 
@@ -19,36 +23,18 @@ __global__ void matrixMul(int* a, int* b, int* c, int N) {
   }
 }
 
-void verify_results(int* a, int* b, int* c, int N) {
-  for (int row = 0; row < N; row++) {
-    for (int col = 0; col < N; col++) {
-      int a_times_b = 0;
-      for (int i = 0; i < N; i++) {
-        a_times_b += a[row * N + i] * b[N * i + col];
-      }
-      if (a_times_b != c[row * N + col]) {
-        printf("the result is wrong at row: %d, column: %d\n", row, col);
-        printf("it should be %d, but it's %d\n", a_times_b, c[row * N + col]);
-        abort();
-      }
-    }
-  }
-}
-
 int main() {
   // Initialize h_a and h_b firstly.
   for (int row = 0; row < N; row++) {
     for (int col = 0; col < N; col++) {
-      h_a[row * N + col] = 1;
-      h_b[row * N + col] = 1;
-      // h_a[row * N + col] = rand() % 100;
-      // h_b[row * N + col] = rand() % 100;
+      h_a[row * N + col] = rand() % 100;
+      h_b[row * N + col] = rand() % 100;
     }
   }
 
-  int* d_a;
-  int* d_b;
-  int* d_c;
+  float* d_a;
+  float* d_b;
+  float* d_c;
   cudaMalloc(&d_a, bytes);
   cudaMalloc(&d_b, bytes);
   cudaMalloc(&d_c, bytes);
@@ -62,6 +48,11 @@ int main() {
   const dim3 threads(THREAD, THREAD);
   const dim3 blocks(BLOCK, BLOCK);
 
+  // warm up
+  for (int i = 0; i < test_round; i++) {
+    matrixMul<<<blocks, threads>>>(d_a, d_b, d_c);
+  }
+
   cudaEvent_t start, stop;
   cudaEventCreate(&start);
   cudaEventCreate(&stop);
@@ -69,8 +60,8 @@ int main() {
   // Record start event
   cudaEventRecord(start);
 
-  for (int i = 0; i < 10; i++) {
-    matrixMul<<<blocks, threads>>>(d_a, d_b, d_c, N);
+  for (int i = 0; i < test_round; i++) {
+    matrixMul<<<blocks, threads>>>(d_a, d_b, d_c);
   }
 
   // Record stop event
@@ -80,10 +71,13 @@ int main() {
 
   float milliseconds = 0;
   cudaEventElapsedTime(&milliseconds, start, stop);
+  double FLOPs = 2.0 * N * N * N * test_round;
+  float GFLOPS = FLOPs / (milliseconds * 1e6);
 
-  printf("Kernel execution time: %f ms\n", milliseconds);
+  printf("Kernel execution time: %.02f ms\n", milliseconds);
+  printf("GFLOPS: %.02f gops\n", GFLOPS);
 
-  verify_results(h_a, h_b, h_c, N);
+  verify_with_cublas(N, N, N, d_a, d_b, d_c);
 
   printf("COMPLETED SUCCESSFULLY\n");
 
