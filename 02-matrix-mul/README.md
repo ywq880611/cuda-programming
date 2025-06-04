@@ -19,5 +19,6 @@ There is a table for GFLOPS on my local RTX 3080, the shape is **(4096, 4096) @ 
 | 2.2: tmp (use register) | 1969.70 | 8.9% |
 | 3: shared memory opt | 2410.00 | 10.8% |
 | 4: 1d register tile | 5040.12 | 22.6% |
-| 5: 2d register tile | 13947.22 | 62.6% |
+| 5: 2d register tile | 15006.32 | 67.4% |
 | 6: vectorized | 11825.50 | 53.1% |
+| 11: double buffer | 11126.04 | 49.9% |

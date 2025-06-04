@@ -57,4 +57,5 @@ void verify_with_cublas(const int M, const int N, const int K, float* d_a, float
       }
     }
   }
+  printf("verify correctness passed!\n");
 }
